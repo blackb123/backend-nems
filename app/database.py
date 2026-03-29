@@ -1,24 +1,25 @@
 # app/db/session.py
-
 import ssl
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from app.core.config import settings
+
+# ---- Import your models ----
 from app.models.user import Base as UserBase
 from app.models.product import Base as ProductBase
 
-# ---- Optional SSL setup for Render/Postgres ----
-# Render requires SSL in some environments; asyncpg expects an SSLContext
-ssl_context = ssl.create_default_context()
-# If your database has a self-signed certificate, you can disable verification (not recommended for production)
-# ssl_context.check_hostname = False
-# ssl_context.verify_mode = ssl.CERT_NONE
+# ---- Database URL for Render ----
+DATABASE_URL = "postgresql+asyncpg://nemsbd_user:HLo20JYbBhL2b10Er4YUfTmo4yPJ5HTo@nemsbd.postgres.render.com:5432/nemsbd"
 
-# ---- Create async engine ----
+# ---- SSL setup for Render ----
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE  # Needed for Render's self-signed cert
+
+# ---- Async engine ----
 engine = create_async_engine(
-    settings.database_url,               # Example: postgresql+asyncpg://user:pass@host:port/dbname
-    connect_args={"ssl": ssl_context},   # Use this for SSL; remove if SSL not needed
-    echo=True                            # Optional: logs SQL queries, useful for debugging
+    DATABASE_URL,
+    connect_args={"ssl": ssl_context},  # Pass SSL only here
+    echo=True,  # optional: logs SQL queries
 )
 
 # ---- Async session factory ----
@@ -33,7 +34,7 @@ async def get_db():
     async with async_session() as session:
         yield session
 
-# ---- Initialize database ----
+# ---- Initialize database tables ----
 async def init_db():
     """
     Run this at startup to create all tables.
