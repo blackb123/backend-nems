@@ -20,10 +20,10 @@ app.include_router(products.router)
 
 
 @app.on_event("startup")
-async def startup_event():
-    await init_db()
+def startup_event():
+    init_db()
 
 
 @app.get("/")
-async def root():
+def root():
     return {"message": "Product Admin API is running"}

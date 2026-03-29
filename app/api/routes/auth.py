@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas.user import User, Token
 from app.models.user import User as UserModel
@@ -13,7 +12,7 @@ security = HTTPBearer()
 
 
 @router.post("/login", response_model=Token)
-async def login(credentials: dict, db: AsyncSession = Depends(get_db)):
+def login(credentials: dict):
     username = credentials.get("username")
     password = credentials.get("password")
     
@@ -39,7 +38,7 @@ async def login(credentials: dict, db: AsyncSession = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     username = verify_token(token)
     return username

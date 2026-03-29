@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 from typing import List, Optional
 import json
@@ -64,10 +64,10 @@ cloudinary.config(
         500: {"description": "Internal server error"}
     }
 )
-async def get_products(
+def get_products(
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
     """
     Retrieve all products from the database.
@@ -77,7 +77,7 @@ async def get_products(
     - **Sorting**: Ordered by creation date (newest first)
     """
     try:
-        result = await db.execute(select(ProductModel).offset(skip).limit(limit))
+        result = db.execute(select(ProductModel).offset(skip).limit(limit))
         products = result.scalars().all()
         return products
     except Exception as e:
@@ -120,13 +120,13 @@ async def get_products(
         500: {"description": "Internal server error"}
     }
 )
-async def create_product(
+def create_product(
     category: str = Form(..., description="Product category from predefined list"),
     header: str = Form(..., description="Product name/title"),
     description: str = Form(..., description="Detailed product description"),
     features: str = Form(..., description="JSON array of product features"),
     image: UploadFile = File(..., description="Product image file (JPEG, PNG, WebP, GIF)"),
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
     current_user: str = Depends(get_current_user)
 ):
     """
@@ -199,8 +199,8 @@ async def create_product(
         
         # Save to database
         db.add(db_product)
-        await db.commit()
-        await db.refresh(db_product)
+        db.commit()
+        db.refresh(db_product)
         
         return ProductResponse(
             success=True,
@@ -213,7 +213,7 @@ async def create_product(
         raise
     except Exception as e:
         # Rollback database changes on error
-        await db.rollback()
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create product: {str(e)}"
@@ -242,9 +242,9 @@ async def create_product(
         500: {"description": "Internal server error"}
     }
 )
-async def delete_product(
+def delete_product(
     product_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
     current_user: str = Depends(get_current_user)
 ):
     """
@@ -257,7 +257,7 @@ async def delete_product(
     """
     try:
         # Verify product exists
-        result = await db.execute(
+        result = db.execute(
             select(ProductModel).where(ProductModel.id == product_id)
         )
         product = result.scalar_one_or_none()
@@ -278,10 +278,10 @@ async def delete_product(
                 print(f"Warning: Failed to delete image from Cloudinary: {e}")
         
         # Delete product from database
-        await db.execute(
+        db.execute(
             delete(ProductModel).where(ProductModel.id == product_id)
         )
-        await db.commit()
+        db.commit()
         
         return DeleteResponse(
             success=True,
@@ -293,7 +293,7 @@ async def delete_product(
         raise
     except Exception as e:
         # Rollback database changes on error
-        await db.rollback()
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete product: {str(e)}"
