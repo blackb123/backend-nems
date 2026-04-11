@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, Boolean, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from enum import Enum
@@ -31,12 +31,20 @@ class ProductCategory(str, Enum):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        UniqueConstraint('category', 'header', name='uq_product_category_header'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     category = Column(String, nullable=False)
     header = Column(String, nullable=False)
     description = Column(Text, nullable=False)
     features = Column(JSON, nullable=False)
-    image_url = Column(String, nullable=False)
-    image_public_id = Column(String, nullable=False)  # Cloudinary public_id for image management
+    
+    # Multiple image support (up to 5 images)
+    images = Column(JSON, nullable=False)  # List of image objects with url, public_id, and order
+    primary_image_index = Column(Integer, default=0)  # Index of primary image in images array
+    
+    is_active = Column(Boolean, default=True)  # Soft delete support
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

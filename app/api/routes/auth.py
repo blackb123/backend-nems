@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
+import hashlib
 from app.database import get_db
 from app.schemas.user import User, Token
 from app.models.user import User as UserModel
@@ -11,8 +13,12 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 security = HTTPBearer()
 
 
+def simple_verify_password(plain_password, hashed_password):
+    """Simple verification for fallback hash"""
+    return hashlib.sha256(plain_password.encode()).hexdigest() == hashed_password
+
 @router.post("/login", response_model=Token)
-def login(credentials: dict):
+def login(credentials: dict, db: Session = Depends(get_db)):
     username = credentials.get("username")
     password = credentials.get("password")
     
@@ -22,9 +28,25 @@ def login(credentials: dict):
             detail="Username and password are required"
         )
     
-    # For now, we'll use a simple hardcoded user
-    # In production, you'd query the database
-    if username != "admin" or password != "admin123":
+    # Query database for user
+    user = db.query(UserModel).filter(UserModel.username == username).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Try bcrypt verification first, fallback to simple hash
+    password_valid = False
+    try:
+        password_valid = verify_password(password, user.password_hash)
+    except:
+        # Fallback to simple hash verification
+        password_valid = simple_verify_password(password, user.password_hash)
+    
+    if not password_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
