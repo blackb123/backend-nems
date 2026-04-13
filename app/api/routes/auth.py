@@ -2,6 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import hashlib
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 from app.database import get_db
 from app.schemas.user import User, Token
 from app.models.user import User as UserModel
@@ -23,18 +29,29 @@ def login(credentials: dict, db: Session = Depends(get_db)):
     password = credentials.get("password")
     
     if not username or not password:
+        logger.warning("Login attempt with missing credentials")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username and password are required"
+            detail={
+                "error": "MISSING_CREDENTIALS",
+                "message": "Username and password are required",
+                "field": "credentials"
+            }
         )
     
     # Query database for user
     user = db.query(UserModel).filter(UserModel.username == username).first()
     
     if not user:
+        logger.warning(f"Login failed - user not found: {username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail={
+                "error": "INVALID_CREDENTIALS",
+                "message": "Incorrect username or password",
+                "field": "credentials",
+                "username": username
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -42,14 +59,22 @@ def login(credentials: dict, db: Session = Depends(get_db)):
     password_valid = False
     try:
         password_valid = verify_password(password, user.password_hash)
-    except:
+        logger.info(f"Password verification for user {username}: {'success' if password_valid else 'failed'}")
+    except Exception as e:
+        logger.warning(f"Bcrypt verification failed for user {username}: {str(e)}")
         # Fallback to simple hash verification
         password_valid = simple_verify_password(password, user.password_hash)
     
     if not password_valid:
+        logger.warning(f"Login failed - invalid password for user {username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail={
+                "error": "INVALID_CREDENTIALS",
+                "message": "Incorrect username or password",
+                "field": "credentials",
+                "username": username
+            },
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -57,6 +82,7 @@ def login(credentials: dict, db: Session = Depends(get_db)):
     access_token = create_access_token(
         data={"sub": username}, expires_delta=access_token_expires
     )
+    logger.info(f"User {username} logged in successfully")
     return {"access_token": access_token, "token_type": "bearer"}
 
 

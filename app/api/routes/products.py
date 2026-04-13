@@ -1,10 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
 from typing import List, Optional, Union
 import json
 import cloudinary
 import cloudinary.uploader
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.schemas.product import (
@@ -39,19 +44,33 @@ NEM_LOGO_IMAGE = {
 def validate_image_file(image: UploadFile) -> None:
     """Check file type and size before upload."""
     if not image.content_type.startswith("image/"):
+        logger.warning(f"Invalid file type: {image.content_type}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only image files are allowed."
+            detail={
+                "error": "INVALID_FILE_TYPE",
+                "message": "Only image files are allowed.",
+                "field": "image",
+                "accepted_types": ["image/jpeg", "image/png", "image/webp"]
+            }
         )
     if image.size and image.size > 10 * 1024 * 1024:  # 10 MB
+        logger.warning(f"File too large: {image.size} bytes")
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Image must be smaller than 10MB."
+            detail={
+                "error": "FILE_TOO_LARGE",
+                "message": "Image must be smaller than 10MB.",
+                "field": "image",
+                "max_size": "10MB",
+                "received_size": f"{image.size / (1024*1024):.1f}MB"
+            }
         )
 
 async def upload_image_to_cloudinary(image: UploadFile, folder: str = "products") -> dict:
     """Upload an image to Cloudinary and return secure URL and public_id."""
     try:
+        logger.info(f"Uploading image: {image.filename} to folder: {folder}")
         result = cloudinary.uploader.upload(
             image.file,
             folder=folder,
@@ -63,11 +82,18 @@ async def upload_image_to_cloudinary(image: UploadFile, folder: str = "products"
             width=2000,
             height=2000
         )
+        logger.info(f"Successfully uploaded: {result['public_id']}")
         return {"url": result["secure_url"], "public_id": result["public_id"]}
     except Exception as e:
+        logger.error(f"Cloudinary upload failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Cloud upload failed: {str(e)}"
+            detail={
+                "error": "UPLOAD_FAILED",
+                "message": f"Cloud upload failed: {str(e)}",
+                "field": "image",
+                "service": "cloudinary"
+            }
         )
 
 def delete_image_from_cloudinary(public_id: str) -> None:
@@ -85,22 +111,45 @@ def parse_features_json(features_str: str) -> List[str]:
     try:
         features = json.loads(features_str)
         if not isinstance(features, list) or not features:
-            raise ValueError("Features must be a non‑empty array.")
+            logger.warning(f"Invalid features format: {features_str}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "INVALID_FEATURES_FORMAT",
+                    "message": "Features must be a non-empty array.",
+                    "field": "features",
+                    "expected_format": "JSON array of strings",
+                    "received": features_str
+                }
+            )
         return features
     except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Features parsing error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid features format: {e}"
+            detail={
+                "error": "INVALID_FEATURES_FORMAT",
+                "message": f"Invalid features format: {e}",
+                "field": "features",
+                "expected_format": "JSON array of strings"
+            }
         )
 
 def validate_category(category: str) -> None:
     """Ensure the provided category exists in the ProductCategory enum."""
     try:
         ProductCategory(category)
+        logger.info(f"Valid category: {category}")
     except ValueError:
+        logger.warning(f"Invalid category: {category}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid category: {category}"
+            detail={
+                "error": "INVALID_CATEGORY",
+                "message": f"Invalid category: {category}",
+                "field": "category",
+                "valid_categories": [c.value for c in ProductCategory]
+            }
         )
 
 # ------------------------------------------------------------------
@@ -110,8 +159,16 @@ def get_product_or_404(db: Session, product_id: int) -> ProductModel:
     """Fetch a product by ID or raise 404."""
     product = db.get(ProductModel, product_id)
     if not product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Product {product_id} not found")
+        logger.warning(f"Product not found: {product_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "PRODUCT_NOT_FOUND",
+                "message": f"Product {product_id} not found",
+                "field": "id",
+                "product_id": product_id
+            }
+        )
     return product
 
 def build_product_query(db: Session, category: Optional[str], is_active: bool):
@@ -178,6 +235,7 @@ def list_products(
         query = query.order_by(ProductModel.created_at.desc()).offset(skip).limit(limit)
         products = db.execute(query).scalars().all()
 
+        logger.info(f"Retrieved {len(products)} products (total: {total})")
         return ProductList(
             products=products,
             total=total,
@@ -187,9 +245,15 @@ def list_products(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Could not retrieve products: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not retrieve products: {str(e)}"
+            detail={
+                "error": "DATABASE_ERROR",
+                "message": "Could not retrieve products",
+                "details": str(e),
+                "operation": "list_products"
+            }
         )
 
 @router.get("/{product_id}", response_model=Product)
@@ -201,8 +265,16 @@ def get_product_by_id(
     """Get a single active product by its ID."""
     product = get_product_or_404(db, product_id)
     if not product.is_active:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Product not found")
+        logger.warning(f"Inactive product accessed: {product_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "PRODUCT_NOT_FOUND",
+                "message": "Product not found",
+                "field": "id",
+                "product_id": product_id
+            }
+        )
     return product
 
 @router.get("/categories/list")
@@ -223,20 +295,48 @@ async def create_new_product(
 ):
     """Create a product with multiple images."""
     # --- Validation ---
+    logger.info(f"Creating product: {header}")
     validate_category(category)
     if not images:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="At least one image is required.")
+        logger.warning("No images provided for product creation")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "NO_IMAGES",
+                "message": "At least one image is required.",
+                "field": "images",
+                "required": true
+            }
+        )
     if len(images) > 4:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Maximum 4 images allowed.")
+        logger.warning(f"Too many images: {len(images)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "TOO_MANY_IMAGES",
+                "message": "Maximum 4 images allowed.",
+                "field": "images",
+                "max_allowed": 4,
+                "received": len(images)
+            }
+        )
     if primary_image_index < 0 or primary_image_index >= len(images):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Invalid primary image index.")
+        logger.warning(f"Invalid primary image index: {primary_image_index}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "INVALID_PRIMARY_INDEX",
+                "message": "Invalid primary image index.",
+                "field": "primary_image_index",
+                "valid_range": f"0-{len(images)-1}",
+                "received": primary_image_index
+            }
+        )
 
     features_list = parse_features_json(features)
 
     # --- Upload images ---
+    logger.info(f"Uploading {len(images)} images for product: {header}")
     uploaded_images = await upload_multiple_images(images)
 
     # --- Create DB record ---
@@ -251,19 +351,27 @@ async def create_new_product(
     )
 
     try:
+        logger.info(f"Creating product in database: {header}")
         db.add(product)
         db.commit()
         db.refresh(product)
+        logger.info(f"Product created successfully: {product.id}")
         return ProductResponse(
             success=True,
             message="Product created successfully",
             data=product
         )
     except Exception as e:
+        logger.error(f"Database error creating product: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {str(e)}"
+            detail={
+                "error": "DATABASE_ERROR",
+                "message": "Failed to create product",
+                "details": str(e),
+                "operation": "create_product"
+            }
         )
 
 @router.put("/{product_id}", response_model=ProductResponse)
@@ -297,6 +405,7 @@ async def update_existing_product(
         product.features = parse_features_json(features)
 
     # --- Handle image updates ---
+    logger.info(f"Updating product {product_id}: {header or '(no change)'}")
     current_images = product.images.copy() if product.images else []
 
     # Remove specified images
@@ -305,22 +414,37 @@ async def update_existing_product(
             ids_list = json.loads(image_ids_to_remove)
             if not isinstance(ids_list, list):
                 raise ValueError("Must be a JSON array.")
+            logger.info(f"Removing {len(ids_list)} images")
             current_images = remove_images_by_public_id(current_images, ids_list)
         except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Invalid image_ids_to_remove format: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid image_ids_to_remove: {e}"
+                detail={
+                    "error": "INVALID_IMAGE_IDS",
+                    "message": f"Invalid image IDs format: {e}",
+                    "field": "image_ids_to_remove",
+                    "expected_format": "JSON array of strings"
+                }
             )
 
     # Add new images
     if new_images:
         # Normalize to list
         images_to_add = new_images if isinstance(new_images, list) else [new_images]
+        logger.info(f"Adding {len(images_to_add)} new images")
 
         if len(current_images) + len(images_to_add) > 4:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Total images cannot exceed 4."
+                detail={
+                    "error": "TOO_MANY_IMAGES",
+                    "message": "Total images cannot exceed 4.",
+                    "field": "images",
+                    "current_count": len(current_images),
+                    "new_count": len(images_to_add),
+                    "max_allowed": 4
+                }
             )
 
         uploaded = await upload_multiple_images(images_to_add)
@@ -341,18 +465,27 @@ async def update_existing_product(
     product.images = current_images
 
     try:
+        logger.info(f"Committing product update: {product_id}")
         db.commit()
         db.refresh(product)
+        logger.info(f"Product updated successfully: {product.id}")
         return ProductResponse(
             success=True,
             message="Product updated successfully",
             data=product
         )
     except Exception as e:
+        logger.error(f"Database error updating product: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error: {str(e)}"
+            detail={
+                "error": "DATABASE_ERROR",
+                "message": "Failed to update product",
+                "details": str(e),
+                "operation": "update_product",
+                "product_id": product_id
+            }
         )
 
 @router.delete("/{product_id}", response_model=DeleteResponse)
@@ -362,14 +495,23 @@ def soft_delete_product(
     current_user: str = Depends(get_current_user)
 ):
     """Soft-delete a product by setting is_active=False."""
+    logger.info(f"Deleting product {product_id} by user {current_user}")
     product = get_product_or_404(db, product_id)
     product.is_active = False
     try:
+        logger.info(f"Soft-deleting product: {product_id}")
         db.commit()
         return DeleteResponse(success=True, message="Product deactivated")
     except Exception as e:
+        logger.error(f"Delete operation failed: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Delete operation failed: {str(e)}"
+            detail={
+                "error": "DELETE_FAILED",
+                "message": "Failed to delete product",
+                "details": str(e),
+                "operation": "delete_product",
+                "product_id": product_id
+            }
         )
